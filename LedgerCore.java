@@ -1,96 +1,132 @@
+import java.util.ArrayList;
 import java.util.LinkedList;
+import java.util.List;
 
 public class LedgerCore {
     
-    // using linked list instead of arraylist just to be different
     public static LinkedList<NodeBlock> mainChain = new LinkedList<>();
-    public static int miningTarget = 4; // changed from 'difficulty'
+    public static List<TxData> pendingTransactions = new ArrayList<>(); // Mempool
+    public static int miningTarget = 4;
+    public static float miningReward = 50f;
 
     public static void main(String[] args) {
-        System.out.println("Starting my blockchain project...");
+        System.out.println("Starting advanced blockchain project with Wallets and Crypto...");
         
-        // 1. Genesis block
+        Wallet systemWallet = new Wallet("System"); // Just to hold genesis funds
+        Wallet studentA = new Wallet("StudentA");
+        Wallet studentB = new Wallet("StudentB");
+        Wallet canteen = new Wallet("Canteen");
+
+        System.out.println("\nWallets generated! Balances:");
+        System.out.println("StudentA: " + studentA.getBalance());
+        
+        // 1. Genesis block (Giving StudentA initial funds from System)
         System.out.println("\n-- Creating Block 0 (Genesis) --");
         NodeBlock gen = new NodeBlock(0, "0");
-        gen.insertRecord(new TxData("System", "StudentA", 1000f));
+        TxData genesisTx = new TxData(null, studentA.publicKey, 1000f); 
+        gen.insertRecord(genesisTx);
         gen.startMining(miningTarget);
         mainChain.add(gen);
         
-        // 2. Second block
-        System.out.println("\n-- Creating Block 1 --");
-        NodeBlock b1 = new NodeBlock(1, gen.currentHash);
-        b1.insertRecord(new TxData("StudentA", "StudentB", 300f));
-        b1.insertRecord(new TxData("StudentA", "Canteen", 50f));
-        b1.startMining(miningTarget);
-        mainChain.add(b1);
+        System.out.println("\nStudentA Balance after Genesis: " + studentA.getBalance());
         
-        // 3. Third block
-        System.out.println("\n-- Creating Block 2 --");
-        NodeBlock b2 = new NodeBlock(2, b1.currentHash);
-        b2.insertRecord(new TxData("StudentB", "Library", 25f));
-        b2.startMining(miningTarget);
-        mainChain.add(b2);
+        // 2. Making some transactions (sending to mempool)
+        System.out.println("\nStudentA tries to send 300 to StudentB");
+        processTransaction(studentA.sendFunds(studentB.publicKey, 300f));
+        
+        System.out.println("StudentA tries to send 50 to Canteen");
+        processTransaction(studentA.sendFunds(canteen.publicKey, 50f));
+        
+        System.out.println("StudentA tries to send 9999 to StudentB (should fail)");
+        processTransaction(studentA.sendFunds(studentB.publicKey, 9999f)); // this will fail at wallet level
+        
+        // 3. Mining the mempool
+        System.out.println("\n-- Mining Pending Transactions into Block 1 --");
+        minePendingTransactions(studentB); // StudentB mines it to get reward
+        
+        System.out.println("\nFinal Balances:");
+        System.out.println("StudentA: " + studentA.getBalance()); // 1000 - 300 - 50 = 650
+        System.out.println("StudentB: " + studentB.getBalance()); // 300 + 50 (reward) = 350
+        System.out.println("Canteen: " + canteen.getBalance());   // 50
         
         // validation check
         System.out.println("\nChecking if everything is correct...");
         boolean isGood = validateIntegrity();
         System.out.println("Is chain valid right now? " + isGood);
-        
-        // hacking simulation
-        System.out.println("\nWait, simulating a hack where we change StudentA's payment...");
-        
-        // going back and changing the amount in the first block
-        mainChain.get(1).recordList.get(0).transferValue = 9999f;
-        
-        System.out.println("\nRunning the checker again...");
-        boolean isGoodAfterHack = validateIntegrity();
-        
-        if(!isGoodAfterHack) {
-            System.out.println("Awesome, the system caught the hack and threw it out.");
-        } else {
-            System.out.println("Something went wrong, it didn't catch the hack.");
+    }
+    
+    // Adds to mempool if signature is valid
+    public static void processTransaction(TxData tx) {
+        if (tx == null) return;
+        if (!tx.verifySignature()) {
+            System.out.println("--> Alert: Transaction signature failed. Discarding.");
+            return;
         }
+        pendingTransactions.add(tx);
+        System.out.println("Transaction added to Mempool!");
+    }
+    
+    // Mines everything in the mempool into a new block
+    public static void minePendingTransactions(Wallet minerWallet) {
+        // Add the mining reward as a system transaction
+        TxData rewardTx = new TxData(null, minerWallet.publicKey, miningReward);
+        pendingTransactions.add(rewardTx);
+        
+        NodeBlock newBlock = new NodeBlock(mainChain.size(), mainChain.getLast().currentHash);
+        
+        // move from mempool to block
+        for(TxData tx : pendingTransactions) {
+            newBlock.insertRecord(tx);
+        }
+        
+        newBlock.startMining(miningTarget);
+        mainChain.add(newBlock);
+        
+        // clear mempool
+        pendingTransactions.clear();
     }
 
     public static boolean validateIntegrity() {
-        // target string of zeros
         StringBuilder sb = new StringBuilder();
         for(int i=0; i<miningTarget; i++) {
             sb.append('0');
         }
         String target = sb.toString();
         
-        // checking the chain
         for(int i = 1; i < mainChain.size(); i++) {
             NodeBlock curr = mainChain.get(i);
             NodeBlock prev = mainChain.get(i-1);
             
-            // first check if any data was altered
+            // Verify all transaction signatures inside the block
+            for (TxData tx : curr.recordList) {
+                if (!tx.verifySignature()) {
+                    System.out.println("--> Alert: Signature on Tx(" + tx.signatureId + ") is INVALID in block " + i);
+                    return false;
+                }
+            }
+            
             String calcRoot = HashGenerator.computeRootHash(curr.recordList);
             if(!curr.rootTreeHash.equals(calcRoot)) {
                 System.out.println("--> Alert: data changed in block " + i);
                 return false;
             }
             
-            // check if hash is still valid
             if(!curr.currentHash.equals(curr.generateBlockHash())) {
                 System.out.println("--> Alert: block hash is wrong for block " + i);
                 return false;
             }
             
-            // check if it links to the previous one
             if(!prev.currentHash.equals(curr.prevBlockId)) {
                 System.out.println("--> Alert: chain link broken at block " + i);
                 return false;
             }
             
-            // check if proof of work was actually done
             if(!curr.currentHash.substring(0, miningTarget).equals(target)) {
                 System.out.println("--> Alert: mining wasn't done for block " + i);
                 return false;
             }
         }
         
-        return true; // everything passed
+        return true; 
     }
 }
